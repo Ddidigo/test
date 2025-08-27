@@ -1,279 +1,145 @@
-/* voice-record.js — Modo simples (sem licença), host liberado para todos */
+// == Zaptos Voice Record – FINAL (all-hosts, float+shadow) ==
 (() => {
-  // ===== Config mínima =====
-  const CFG = {
-    debug: false,
-    // host liberado: não usamos mais allowedHosts
-    isConversationsPath: (p) => /conversations|messages/i.test(p || location.pathname),
+  const VERSION = '1.3-shadow-float-allhosts';
+  try { window.__VOICE_RECORD_VERSION = VERSION; } catch {}
+  const LOG_TAG = '[voice-record]';
+  const BTN_ID = 'zaptos-voice-btn';
+  const WRAP_ID = 'zaptos-voice-wrap';
+  let shadowHost = null, shadowRoot = null;
 
-    // Seletores resilientes (ajuste se seu WL usar outros)
-    sel: {
-      composer: [
-        'div[contenteditable="true"][data-placeholder]',
-        '[contenteditable="true"]',
-        'textarea',
-      ],
-      toolbar: [
-        '[data-testid="conversation-composer"]',
-        '[data-testid="conversations-composer"]',
-        '[class*="composer"]',
-      ],
-      attachButton: [
-        'button[aria-label*="attach" i]',
-        'button[aria-label*="anexar" i]',
-        'button[aria-label*="upload" i]',
-        '[data-icon*="paperclip"]',
-        'svg[aria-label*="attach" i]',
-      ],
-      fileInput: [
-        'input[type="file"][accept*="audio"]',
-        'input[type="file"]'
-      ],
-      sendButton: [
-        'button[aria-label*="send" i]',
-        'button[aria-label*="enviar" i]',
-        'button[type="submit"]',
-        '[data-testid*="send" i]',
-      ],
-      messageList: [
-        '[data-testid*="messages-list"]',
-        '[class*="messages"]',
-        '[class*="conversation"]'
-      ]
-    },
+  const log = (...a) => console.log(LOG_TAG, ...a);
+  const once = (fn) => { let done=false; return (...a)=>{ if(!done){done=true; fn(...a);} }; };
 
-    // Gravação/anexo
-    filePrefix: 'audio_',
-    mime: 'audio/webm',
-    mediaExtensions: ['.mp3','.wav','.ogg','.m4a','.webm','.mp4'],
-  };
+  // 1) Cria host + Shadow DOM (isola CSS do site)
+  function ensureShadow() {
+    if (shadowHost && document.body.contains(shadowHost)) return shadowRoot;
+    shadowHost = document.getElementById(WRAP_ID);
+    if (!shadowHost) {
+      shadowHost = document.createElement('div');
+      shadowHost.id = WRAP_ID;
+      // posição do host
+      shadowHost.style.position = 'fixed';
+      shadowHost.style.right = '16px';
+      shadowHost.style.bottom = '16px';
+      shadowHost.style.zIndex = '2147483647';
+      shadowHost.style.all = 'initial'; // minimiza influência de CSS global
+      document.documentElement.appendChild(shadowHost);
+    }
+    shadowRoot = shadowHost.shadowRoot || shadowHost.attachShadow({ mode: 'open' });
+    return shadowRoot;
+  }
 
-  // ===== Estado =====
-  const ST = {
-    recording: false,
-    mediaStream: null,
-    recorder: null,
-    chunks: [],
-    hookingEnter: false,
-  };
+  // 2) Renderiza botão no Shadow
+  function renderButton() {
+    const root = ensureShadow();
+    if (!root) return;
 
-  // ===== Utils =====
-  const log = (...a) => CFG.debug && console.log('[voice-record]', ...a);
-  const delay = (ms) => new Promise(r => setTimeout(r, ms));
-  const on = (t,e,f,o)=>t.addEventListener(e,f,o);
-  const isAllowedHost = () => true; // <<< host liberado
-  const qsAny = (arr, root=document) => { for (const s of arr) { const el = root.querySelector(s); if (el) return el; } return null; };
-  const makeFilename = (ext='webm') => `${CFG.filePrefix}${Date.now()}.${ext}`;
+    if (root.getElementById(BTN_ID)) return; // já existe
 
-  // Diagnóstico de carregamento
-  try { console.log('[voice-record] carregado ✅', location.href); } catch(e){}
-
-  function createStyle() {
-    if (document.getElementById('zaptos-voice-style')) return;
-    const css = `
-      .zaptos-voice-btn {
-        display:inline-flex;align-items:center;gap:6px;
-        padding:6px 10px;border:1px solid rgba(0,0,0,.15);
-        border-radius:8px;cursor:pointer;background:#fff;font-size:12px;
+    const style = document.createElement('style');
+    style.textContent = `
+      :host { all: initial; }
+      .btn {
+        all: initial;
+        display: inline-flex; align-items: center; gap: 8px;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+        font-size: 14px; padding: 10px 14px; border-radius: 999px;
+        box-shadow: 0 6px 20px rgba(0,0,0,.15);
+        cursor: pointer; user-select: none; border: 1px solid rgba(0,0,0,.08);
+        background: #ffffff; color: #111; transition: transform .05s ease;
       }
-      .zaptos-voice-btn.is-recording { background:#ffe8e8;border-color:#f33; }
-      .zaptos-voice-dot{width:8px;height:8px;border-radius:50%;background:#f33;animation:zblink 1s infinite;}
-      @keyframes zblink{0%{opacity:.2}50%{opacity:1}100%{opacity:.2}}
-      .zaptos-voice-inline-player{display:block;margin:6px 0;}
+      .btn:hover { transform: translateY(-1px); }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background:#888; }
+      .rec { background: #e11900 !important; box-shadow: 0 0 0 3px rgba(225,25,0,.2); }
+      .tag  { font-size: 11px; opacity: .7; }
+      .badge{ margin-left:8px; font-size:11px; opacity:.6; }
     `;
-    const s = document.createElement('style');
-    s.id = 'zaptos-voice-style';
-    s.textContent = css;
-    document.head.appendChild(s);
-  }
 
-  // ===== Recorder =====
-  async function startRecording(btn) {
-    if (ST.recording) return;
-    try {
-      ST.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      alert('Não foi possível acessar o microfone.');
-      return;
-    }
-    ST.chunks = [];
-    ST.recorder = new MediaRecorder(ST.mediaStream, { mimeType: CFG.mime });
-    ST.recorder.ondataavailable = e => e.data && ST.chunks.push(e.data);
-    ST.recorder.onstop = async () => {
-      const blob = new Blob(ST.chunks, { type: CFG.mime });
-      await handleRecordedBlob(blob);
-      stopCleanup();
-      btn.classList.remove('is-recording');
-      btn.textContent = '🎤 Gravar';
-    };
-    ST.recorder.start();
-    ST.recording = true;
-    btn.classList.add('is-recording');
-    btn.innerHTML = '<span class="zaptos-voice-dot"></span> Gravando…';
-  }
-  function stopRecording() { if (ST.recording && ST.recorder) { try { ST.recorder.stop(); } catch {} } }
-  function stopCleanup() {
-    ST.recording = false;
-    try { ST.mediaStream?.getTracks().forEach(t => t.stop()); } catch {}
-    ST.mediaStream = null; ST.recorder = null; ST.chunks = [];
-  }
+    const wrap = document.createElement('div');
+    wrap.setAttribute('part', 'wrap');
 
-  // ===== Composer / envio =====
-  const findComposer = () => qsAny(CFG.sel.composer);
-  const findToolbar = () => qsAny(CFG.sel.toolbar);
-  const findSendButton = () => qsAny(CFG.sel.sendButton);
-  const findAttachButton = () => qsAny(CFG.sel.attachButton);
-  const findFileInput = () => qsAny(CFG.sel.fileInput);
-
-  async function openAttachIfNeeded() {
-    let input = findFileInput();
-    if (input) return input;
-    const clip = findAttachButton();
-    if (clip) {
-      clip.dispatchEvent(new MouseEvent('click', { bubbles:true }));
-      await delay(200);
-      input = findFileInput();
-    }
-    return input;
-  }
-
-  function pasteText(editable, text) {
-    if (!editable) return;
-    if (editable.tagName === 'TEXTAREA' || editable.tagName === 'INPUT') {
-      editable.value += text;
-      editable.dispatchEvent(new Event('input', { bubbles:true }));
-    } else {
-      editable.focus();
-      document.execCommand('insertText', false, text);
-    }
-  }
-
-  function injectInlinePlayerAfter(el, url, type='audio/webm') {
-    const isVideo = /video|\.mp4|\.webm/i.test(type);
-    const player = document.createElement(isVideo ? 'video' : 'audio');
-    player.controls = true;
-    player.src = url;
-    player.className = 'zaptos-voice-inline-player';
-    el.insertAdjacentElement('afterend', player);
-  }
-
-  async function attachFileToComposer(blob, filename) {
-    const input = await openAttachIfNeeded();
-    if (input) {
-      const file = new File([blob], filename, { type: blob.type || CFG.mime });
-      const dt = new DataTransfer(); dt.items.add(file);
-      input.files = dt.files;
-      input.dispatchEvent(new Event('change', { bubbles:true }));
-      await delay(150);
-      return true;
-    }
-    return false;
-  }
-
-  async function handleRecordedBlob(blob) {
-    // 1) tentar anexo nativo
-    const ok = await attachFileToComposer(blob, makeFilename('webm'));
-    if (ok) {
-      const send = findSendButton();
-      if (send) send.click();
-      return;
-    }
-    // 2) fallback: colar URL blob no editor + player inline
-    const url = URL.createObjectURL(blob);
-    const comp = findComposer();
-    if (comp) {
-      pasteText(comp, `\nÁudio: ${url}\n`);
-      injectInlinePlayerAfter(comp, url, blob.type);
-    } else {
-      alert('Não encontrei o campo de mensagem para anexar o áudio.');
-    }
-  }
-
-  // ===== UI =====
-  function ensureRecordButton() {
-    const toolbar = findToolbar();
-    if (!toolbar || document.getElementById('zaptos-voice-btn')) return;
     const btn = document.createElement('button');
-    btn.id = 'zaptos-voice-btn';
+    btn.id = BTN_ID;
     btn.type = 'button';
-    btn.className = 'zaptos-voice-btn';
-    btn.textContent = '🎤 Gravar';
-    btn.addEventListener('click', () => {
-      if (!ST.recording) startRecording(btn); else stopRecording();
-    });
-    toolbar.appendChild(btn);
+    btn.className = 'btn';
+    btn.innerHTML = `<span class="dot" id="dot"></span><span>Gravar</span><span class="badge">${VERSION}</span>`;
+    btn.onclick = toggleRecording;
+
+    wrap.appendChild(style);
+    wrap.appendChild(btn);
+    root.appendChild(wrap);
   }
 
-  function enhanceMediaLinks(root=document) {
-    const anchors = root.querySelectorAll('a[href]');
-    anchors.forEach(a => {
-      const href = String(a.getAttribute('href')||'');
-      const lower = href.toLowerCase();
-      if (!href) return;
-      if (!CFG.mediaExtensions.some(ext => lower.includes(ext))) return;
-      if (a.nextElementSibling && a.nextElementSibling.classList?.contains('zaptos-voice-inline-player')) return;
-
-      const isVideo = lower.endsWith('.mp4') || lower.endsWith('.webm');
-      const el = document.createElement(isVideo ? 'video' : 'audio');
-      el.controls = true; el.src = a.href; el.className = 'zaptos-voice-inline-player';
-      a.insertAdjacentElement('afterend', el);
-    });
+  // 3) Gravação (mínimo viável) — só para feedback visual por enquanto
+  let media = { stream: null, recorder: null, chunks: [], recording: false };
+  async function startRecording() {
+    try {
+      media.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      media.recorder = new MediaRecorder(media.stream);
+      media.chunks = [];
+      media.recorder.ondataavailable = e => { if (e.data && e.data.size) media.chunks.push(e.data); };
+      media.recorder.onstop = () => {
+        const blob = new Blob(media.chunks, { type: 'audio/webm' });
+        log('gravacao pronta (blob):', blob);
+        // TODO: aqui conectamos na sua UI: anexar/enviar (quando você me passar os seletores reais)
+      };
+      media.recorder.start();
+      media.recording = true;
+      setButtonState(true);
+      log('gravando…');
+    } catch (e) {
+      log('falha ao iniciar microfone:', e);
+      alert('Não foi possível acessar o microfone. Verifique permissões do navegador.');
+    }
+  }
+  function stopRecording() {
+    try {
+      media.recorder && media.recorder.state !== 'inactive' && media.recorder.stop();
+      media.stream && media.stream.getTracks().forEach(t => t.stop());
+    } catch {}
+    media.recording = false;
+    setButtonState(false);
+    log('parou a gravação.');
+  }
+  function toggleRecording() {
+    media.recording ? stopRecording() : startRecording();
+  }
+  function setButtonState(isRec) {
+    const root = shadowRoot || ensureShadow();
+    const dot = root && root.getElementById('dot');
+    const btn = root && root.getElementById(BTN_ID);
+    if (!dot || !btn) return;
+    dot.className = 'dot' + (isRec ? ' rec' : '');
+    btn.querySelector('span:nth-child(2)').textContent = isRec ? 'Gravando…' : 'Gravar';
   }
 
-  // ===== Enter vs Shift+Enter =====
-  function hookEnterBehavior() {
-    if (ST.hookingEnter) return;
-    const comp = findComposer();
-    if (!comp) return;
-    ST.hookingEnter = true;
+  // 4) Observadores para garantir que o botão exista SEMPRE
+  const reRender = once(() => renderButton());
+  function mountForever() {
+    renderButton();
 
-    comp.addEventListener('keydown', (e) => {
-      // Enter envia; Shift+Enter nova linha
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        const send = findSendButton();
-        if (send) send.click();
+    // se o app remover o host, recoloca
+    const obs = new MutationObserver(() => {
+      if (!shadowHost || !document.documentElement.contains(shadowHost)) {
+        ensureShadow(); renderButton();
       }
     });
+    obs.observe(document.documentElement, { childList: true, subtree: true });
+
+    // watchdog simples (ex.: frameworks trocam <body>)
+    setInterval(() => {
+      if (!shadowHost || !shadowRoot || !shadowRoot.getElementById(BTN_ID)) {
+        ensureShadow(); renderButton();
+      }
+    }, 1500);
   }
 
-  // ===== Montagem =====
-  function onTargetPage() { return isAllowedHost() && CFG.isConversationsPath(location.pathname); }
-
-  async function mount() {
-    if (!onTargetPage()) { log('fora da página de conversas'); return; }
-    createStyle();
-    ensureRecordButton();
-    hookEnterBehavior();
-    enhanceMediaLinks(document);
-  }
-
-  // Re-montagem em SPA e mudanças de DOM
-  let mountTimer;
-  const scheduleMount = () => { clearTimeout(mountTimer); mountTimer = setTimeout(mount, 200); };
-
-  // Hook SPA leve
-  const origPush = history.pushState;
-  history.pushState = function () {
-    const ret = origPush.apply(this, arguments);
-    window.dispatchEvent(new Event('zaptos:navigate'));
-    return ret;
-  };
-  on(window, 'zaptos:navigate', scheduleMount);
-  on(window, 'popstate', scheduleMount);
-
-  // Observer para renders do app
-  const mo = new MutationObserver(() => scheduleMount());
-  mo.observe(document.documentElement, { childList:true, subtree:true });
-
-  // Eventos comuns
-  on(document, 'click', () => setTimeout(() => { scheduleMount(); enhanceMediaLinks(document); }, 250));
-  on(document, 'keydown', (e) => { if (e.key === 'Enter') setTimeout(scheduleMount, 250); });
-
-  // Primeira execução
+  // 5) Espera o DOM ficar pronto (ou vai direto se já estiver)
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', scheduleMount);
+    document.addEventListener('DOMContentLoaded', () => { mountForever(); });
   } else {
-    scheduleMount();
+    mountForever();
   }
+
+  log(`carregado ✅ versão ${VERSION}`);
 })();
