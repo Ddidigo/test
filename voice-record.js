@@ -1,13 +1,12 @@
-console.log('[voice-record] carregado ✅', location.href);
-/* voice-record.js */
+/* voice-record.js — Modo simples (sem licença), host liberado para todos */
 (() => {
-  // ===== Config mínima (ajuste se precisar) =====
+  // ===== Config mínima =====
   const CFG = {
     debug: false,
-    allowedHosts: ['app.gohighlevel.com', 'leadconnectorhq.com'],
+    // host liberado: não usamos mais allowedHosts
     isConversationsPath: (p) => /conversations|messages/i.test(p || location.pathname),
 
-    // Seletores resilientes (candidatos)
+    // Seletores resilientes (ajuste se seu WL usar outros)
     sel: {
       composer: [
         'div[contenteditable="true"][data-placeholder]',
@@ -20,21 +19,21 @@ console.log('[voice-record] carregado ✅', location.href);
         '[class*="composer"]',
       ],
       attachButton: [
-        'button[aria-label*="attach"]',
-        'button[aria-label*="Anexar"]',
-        'button[aria-label*="Upload"]',
+        'button[aria-label*="attach" i]',
+        'button[aria-label*="anexar" i]',
+        'button[aria-label*="upload" i]',
         '[data-icon*="paperclip"]',
-        'svg[aria-label*="attach"]',
+        'svg[aria-label*="attach" i]',
       ],
       fileInput: [
         'input[type="file"][accept*="audio"]',
         'input[type="file"]'
       ],
       sendButton: [
-        'button[aria-label*="Send"]',
-        'button[aria-label*="Enviar"]',
+        'button[aria-label*="send" i]',
+        'button[aria-label*="enviar" i]',
         'button[type="submit"]',
-        '[data-testid*="send"]',
+        '[data-testid*="send" i]',
       ],
       messageList: [
         '[data-testid*="messages-list"]',
@@ -59,13 +58,15 @@ console.log('[voice-record] carregado ✅', location.href);
   };
 
   // ===== Utils =====
-  const log = (...a) => CFG.debug && console.log('[ZaptosVoice]', ...a);
+  const log = (...a) => CFG.debug && console.log('[voice-record]', ...a);
   const delay = (ms) => new Promise(r => setTimeout(r, ms));
   const on = (t,e,f,o)=>t.addEventListener(e,f,o);
-
-  const isAllowedHost = () => CFG.allowedHosts.some(h => location.host.includes(h));
+  const isAllowedHost = () => true; // <<< host liberado
   const qsAny = (arr, root=document) => { for (const s of arr) { const el = root.querySelector(s); if (el) return el; } return null; };
-  const makeFilename = (ext='webm') => new Date().toISOString().replace(/[:.]/g,'-').replace('T','_').split('Z')[0] && `${CFG.filePrefix}${Date.now()}.${ext}`;
+  const makeFilename = (ext='webm') => `${CFG.filePrefix}${Date.now()}.${ext}`;
+
+  // Diagnóstico de carregamento
+  try { console.log('[voice-record] carregado ✅', location.href); } catch(e){}
 
   function createStyle() {
     if (document.getElementById('zaptos-voice-style')) return;
@@ -103,7 +104,7 @@ console.log('[voice-record] carregado ✅', location.href);
       await handleRecordedBlob(blob);
       stopCleanup();
       btn.classList.remove('is-recording');
-      btn.innerHTML = '🎤 Gravar';
+      btn.textContent = '🎤 Gravar';
     };
     ST.recorder.start();
     ST.recording = true;
@@ -118,11 +119,11 @@ console.log('[voice-record] carregado ✅', location.href);
   }
 
   // ===== Composer / envio =====
-  function findComposer() { return qsAny(CFG.sel.composer); }
-  function findToolbar() { return qsAny(CFG.sel.toolbar); }
-  function findSendButton() { return qsAny(CFG.sel.sendButton); }
-  function findAttachButton() { return qsAny(CFG.sel.attachButton); }
-  function findFileInput() { return qsAny(CFG.sel.fileInput); }
+  const findComposer = () => qsAny(CFG.sel.composer);
+  const findToolbar = () => qsAny(CFG.sel.toolbar);
+  const findSendButton = () => qsAny(CFG.sel.sendButton);
+  const findAttachButton = () => qsAny(CFG.sel.attachButton);
+  const findFileInput = () => qsAny(CFG.sel.fileInput);
 
   async function openAttachIfNeeded() {
     let input = findFileInput();
@@ -240,7 +241,7 @@ console.log('[voice-record] carregado ✅', location.href);
   function onTargetPage() { return isAllowedHost() && CFG.isConversationsPath(location.pathname); }
 
   async function mount() {
-    if (!onTargetPage()) return;
+    if (!onTargetPage()) { log('fora da página de conversas'); return; }
     createStyle();
     ensureRecordButton();
     hookEnterBehavior();
